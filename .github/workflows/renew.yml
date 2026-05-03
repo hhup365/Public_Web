@@ -1,0 +1,108 @@
+name: Web-free-cloud Auto Renewal
+on:
+  schedule:
+    - cron: '32 22 */2 * *'
+  workflow_dispatch:
+
+jobs:
+  run-automation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 📥 Checkout public repo
+        uses: actions/checkout@v4
+
+      - name: 📥 Checkout private repo
+        uses: actions/checkout@v4
+        with:
+          repository: hhup365/Test-web-free-cloud
+          token: ${{ secrets.GH_PAT }}
+          path: private_repo
+
+      - name: 🔄 Merge private code into workspace
+        run: |
+          rsync -a --exclude='.git' private_repo/ ./
+          rm -rf private_repo
+
+      - name: 🔍 Check Renewal Necessity
+        id: check
+        run: |
+          if [ ! -f "state.json" ]; then
+            echo "⚠️ state.json 不存在，直接进行续期"
+            echo "need_renew=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          TODAY=$(date -u +%Y-%m-%d)
+          NEED_RENEW=false
+          for due_date in $(cat state.json | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for v in data.values():
+              print(v.get('due_date', ''))
+          "); do
+            if [ -z "$due_date" ]; then
+              echo "⚠️ 某账号无 due_date，标记需续期"
+              NEED_RENEW=true
+              break
+            fi
+            DAYS_LEFT=$(( ( $(date -d "$due_date" +%s) - $(date -d "$TODAY" +%s) ) / 86400 ))
+            echo "📅 到期日: $due_date，距今: ${DAYS_LEFT} 天"
+            if [ "$DAYS_LEFT" -le 7 ]; then
+              echo "✅ 距离到期 ${DAYS_LEFT} 天，需要续期"
+              NEED_RENEW=true
+              break
+            else
+              echo "⏭️ 距离到期 ${DAYS_LEFT} 天，暂不需要续期"
+            fi
+          done
+          echo "need_renew=$NEED_RENEW" >> $GITHUB_OUTPUT
+
+      - name: 🚫 Skip if No Renewal Needed
+        if: steps.check.outputs.need_renew == 'false'
+        run: echo "✅ 所有账号距到期均超过 7 天，无需续期。"
+
+      - name: 🐍 Setup Python
+        if: steps.check.outputs.need_renew == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install Dependencies
+        if: steps.check.outputs.need_renew == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb chromium-browser
+          pip install -r requirements.txt
+          seleniumbase install chromedriver
+
+      - name: ⚙️ Setup Proxy
+        if: steps.check.outputs.need_renew == 'true'
+        run: |
+          wget -q https://github.com/SagerNet/sing-box/releases/download/v1.13.11/sing-box-1.13.11-linux-amd64.tar.gz
+          tar -xzf sing-box-1.13.11-linux-amd64.tar.gz
+          mv sing-box-1.13.11-linux-amd64/sing-box ./sing-box
+          chmod +x ./sing-box
+
+      - name: 🚀 Run Auto Renewal Script
+        if: steps.check.outputs.need_renew == 'true'
+        env:
+          ALL_SECRETS: ${{ toJson(secrets) }}
+        run: python3 app.py
+
+      - name: 💾 Commit and Push state.json
+        if: steps.check.outputs.need_renew == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name  "github-actions[bot]"
+          git add state.json
+          git diff --quiet && git diff --staged --quiet || \
+            (git commit -m "chore: auto update expiration states [skip ci]" && git push)
+
+      - name: 📸 Upload Screenshots
+        if: always() && steps.check.outputs.need_renew == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: screenshots/
+          retention-days: 5
