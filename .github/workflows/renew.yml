@@ -1,7 +1,7 @@
 name: Web-free-cloud Auto Renewal
 on:
   schedule:
-    - cron: '32 22 */2 * *'
+    - cron: '30 9 */2 * *'
   workflow_dispatch:
 
 jobs:
